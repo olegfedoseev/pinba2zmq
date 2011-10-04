@@ -6,12 +6,12 @@ DRAFT!
 Демон на питоне для начального сбора и агрегации данных от пинбы.
 Использует: gevent, pyzmq, gevent_zmq, protobuf, simplejson
 
-http://www.gevent.org/
-http://www.zeromq.org/bindings:python
-https://github.com/traviscline/gevent-zeromq
-https://github.com/simplejson/simplejson
-http://code.google.com/p/protobuf/
-https://github.com/Greplin/fast-python-pb
++ http://www.gevent.org/
++ http://www.zeromq.org/bindings:python
++ https://github.com/traviscline/gevent-zeromq
++ https://github.com/simplejson/simplejson
++ http://code.google.com/p/protobuf/
++ https://github.com/Greplin/fast-python-pb
 
 Как использовать:
 -----
@@ -21,7 +21,7 @@ https://github.com/Greplin/fast-python-pb
 Туда он отдает в формате json время плюс массив с данными запросов.
 Формат следующий:
 
-``` python
+``` js
 [
 	['host', 'server', 'script'],
 	[rps, doc_size, {'med': 14786, 'p75': 14786, 'max': 14786, 'dev': 14786, 'p85': 14786, 'avg': 14786}], 
@@ -34,7 +34,8 @@ https://github.com/Greplin/fast-python-pb
 ```
 
 Время идёт в формате:
-``` python
+
+``` js
 {
 	'med': медиана, 
 	'p75': 75% пеценталь, 
@@ -44,6 +45,7 @@ https://github.com/Greplin/fast-python-pb
 	'avg': среднее
 }
 ```
+
 Всё в микросекундах
 
 Эти данные потом можно или записывать в какое-либо хранилище или использовать для любого анализа в реальном времени.
