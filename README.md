@@ -3,7 +3,12 @@ PINBA TO ZMQ
 
 DRAFT!
 
-Демон на питоне для начального сбора и агрегации данных от пинбы.
+Python daemon for collection and basic aggregation of pinba (http://pinba.org) data.
+
+Use: gevent, pyzmq, gevent_zmq, protobuf, simplejson
+
+Демон на питоне для начального сбора и агрегации данных от пинбы (http://pinba.org).
+
 Использует: gevent, pyzmq, gevent_zmq, protobuf, simplejson
 
 + http://www.gevent.org/
@@ -13,13 +18,17 @@ DRAFT!
 + http://code.google.com/p/protobuf/
 + https://github.com/Greplin/fast-python-pb
 
-Как использовать:
+How to use / Как использовать:
 -----
+
+Install/compile all from links above, from folder pinba_pb install wrapper for protobuf packet.
+Then just start daemon.py and it should start listning port 30002 for pinba packets and port 5000 as zeromq.pub socket for results. Results it sends in JSON format.
 
 Всё вышеперечисленное установить/скомпилировать, из папки pinba_pb поставить обётку для protobuf-сообщений пинбы.
 Потом просто запускаем daemon.py и он должен начать слушать порт 30002 для пакетов от пинбы и порт 5000 как zmq.pub сокет.
 Туда он отдает в формате json время плюс массив с данными запросов.
-Формат следующий:
+
+Format of results / Формат следующий:
 
 ``` js
 [
@@ -33,27 +42,31 @@ DRAFT!
 ]
 ```
 
-Время идёт в формате:
+Time in folowing format / Время идёт в формате:
 
 ``` js
 {
-	'med': медиана, 
-	'p75': 75% пеценталь, 
-	'max': максимум, 
-	'dev': среднеквадратичное отклонение, 
-	'p85': 85% перценталь, 
-	'avg': среднее
+	'med': медиана / median, 
+	'p75': 75% пеценталь / percentile, 
+	'max': максимум / maximum, 
+	'dev': среднеквадратичное отклонение / stddev, 
+	'p85': 85% перценталь / percentile, 
+	'avg': среднее / average
 }
 ```
 
-Всё в микросекундах
+All time values is in microseconds.
+
+It primary usage is for real-time monitoring or analisys of php.
+
+Всё в микросекундах.
 
 Эти данные потом можно или записывать в какое-либо хранилище или использовать для любого анализа в реальном времени.
 
-Автор
+Author
 -------
 
-**Олег Федосеев**
+**Oleg Fedoseev**
 
 + http://twitter.com/olegfedoseev
 + http://github.com/aryoh
