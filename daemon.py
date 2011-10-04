@@ -21,36 +21,25 @@ class groupby(dict):
     __iter__ = dict.iteritems
 
 def avg(values, cnt=None):
-    """ Вычисляет среднее значение """
     return sum(map(float, values)) / (len(values) if cnt is None else cnt)
 
 def stddev(values, cnt=None):
-    """ Вычисляет среднеквадратическое отклонение """
     mean = avg(values)
     return (sum((v - mean) ** 2 for v in values) / (len(values) if cnt is None else cnt)) ** 0.5
 
 def median(values):
     """ 
-    Вычисляет медиану 
     A median is also known as the 50th percentile. Exactly 50% of people make less than the median and 50% make more.
     """
     return sorted(values)[len(values) / 2]
 
 def percentile(values, percentile=75):
-    """
-    Вычисляет перцентиль 
-    """
     idx = math.trunc(((100 - percentile) / 100) * len(values))
     if idx > 0:
         values = sorted(values)[idx:]
     return sum(values) / len(values)
 
 def aggregate(values, cnt=None):
-    """
-    Возвращает массив c максимальным значением, 75ти и 85ти процентным перценталем, 
-    средним и медианным значениями и среднеквадратичным отклонением.
-    Все значения в микросекундах, int
-    """
     if cnt is None:
         cnt = len(values)
 
