@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import os, sys, time, multiprocessing, itertools, math,errno, traceback
+import os, sys, time, multiprocessing, itertools, math, errno, traceback
 
 import gevent
 from gevent.monkey import patch_all; patch_all()
@@ -333,3 +333,12 @@ class DgramServer(BaseServer):
 
     def is_fatal_error(self, ex):
         return isinstance(ex, socket.error) and ex[0] in (errno.EBADF, errno.EINVAL, errno.ENOTSOCK)
+
+if __name__ == "__main__":
+    daemon = PinbaDaemon()
+    try:
+        daemon.run()
+    except KeyboardInterrupt:
+        print "\nGot Ctrl-C, shutting down..."
+    except Exception, e:
+        print "Oops...", e
