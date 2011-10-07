@@ -7,28 +7,43 @@ Python daemon for collection and basic aggregation of pinba (http://pinba.org) d
 
 Use: gevent, pyzmq, gevent_zmq, protobuf, simplejson
 
-Демон на питоне для начального сбора и агрегации данных от пинбы (http://pinba.org).
-
-Использует: gevent, pyzmq, gevent_zmq, protobuf, simplejson
-
 + http://www.gevent.org/
 + http://www.zeromq.org/bindings:python
 + https://github.com/traviscline/gevent-zeromq
 + https://github.com/simplejson/simplejson
 + http://code.google.com/p/protobuf/
 + https://github.com/Greplin/fast-python-pb
++ http://pypi.python.org/pypi/python-daemon/
 
-How to use / Как использовать:
+How to use
 -----
 
 Install/compile all from links above, from folder pinba_pb install wrapper for protobuf packet.
-Then just start daemon.py and it should start listning port 30002 for pinba packets and port 5000 as zeromq.pub socket for results. Results it sends in JSON format.
+Start script in debug mode, in foreground like that:
 
-Всё вышеперечисленное установить/скомпилировать, из папки pinba_pb поставить обётку для protobuf-сообщений пинбы.
-Потом просто запускаем daemon.py и он должен начать слушать порт 30002 для пакетов от пинбы и порт 5000 как zmq.pub сокет.
-Туда он отдает в формате json время плюс массив с данными запросов.
+``` shell
+> python daemon.py [--log /path/to/file.log] [--pid /path/to/file.pid]
+```
 
-Format of results / Формат следующий:
+By default it use path /var/log/pinba.log for log file and /var/run/pinba.pid for PID file.
+
+To start in production mode, as daemon just add -d option:
+
+``` shell
+> python daemon.py -d [--log /path/to/file.log] [--pid /path/to/file.pid]
+```
+
+To stop daemon add "stop":
+
+``` shell
+> python daemon.py -d [--log /path/to/file.log] [--pid /path/to/file.pid] stop
+```
+
+You can also specify ip (-i|--ip 0.0.0.0), port (-p|--port 30002) and address for output socket (--out "tcp://*:5000")
+
+After start it should start listning port 30002 for pinba packets and port 5000 as zeromq.pub socket for results. Results it sends in JSON format.
+
+Format of results:
 
 ``` js
 [
@@ -46,22 +61,18 @@ Time in folowing format / Время идёт в формате:
 
 ``` js
 {
-	'med': медиана / median, 
-	'p75': 75% пеценталь / percentile, 
-	'max': максимум / maximum, 
-	'dev': среднеквадратичное отклонение / stddev, 
-	'p85': 85% перценталь / percentile, 
-	'avg': среднее / average
+	'med': median, 
+	'p75': 75% percentile, 
+	'max': maximum, 
+	'dev': stddev, 
+	'p85': 85% percentile, 
+	'avg': average
 }
 ```
 
 All time values is in microseconds.
 
 It primary usage is for real-time monitoring or analisys of php.
-
-Всё в микросекундах.
-
-Эти данные потом можно или записывать в какое-либо хранилище или использовать для любого анализа в реальном времени.
 
 Author
 -------
