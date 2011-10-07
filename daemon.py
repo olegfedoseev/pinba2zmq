@@ -1,7 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import os, sys, time, multiprocessing, itertools, math, errno, traceback
+from __future__ import with_statement
+
+import os, sys, time, multiprocessing, itertools, math, errno, traceback, signal
+from optparse import OptionParser
+import sys, logging, logging.handlers, traceback
 
 import gevent
 from gevent.monkey import patch_all; patch_all()
@@ -10,9 +14,14 @@ from gevent.pool import Pool
 from gevent.baseserver import BaseServer
 from gevent import socket, core
 
+import simplejson as json
 from gevent_zeromq import zmq as gzmq
+import daemon
+import daemon.pidlockfile
 
 from Pinba import Request
+
+logger = logging.getLogger("pinba")
 
 class groupby(dict):
     def __init__(self, seq, key=lambda x:x):
@@ -20,66 +29,68 @@ class groupby(dict):
             self.setdefault(key(value), []).append(value)
     __iter__ = dict.iteritems
 
-def avg(values, cnt=None):
-    return sum(map(float, values)) / (len(values) if cnt is None else cnt)
-
-def stddev(values, cnt=None):
-    mean = avg(values)
-    return (sum((v - mean) ** 2 for v in values) / (len(values) if cnt is None else cnt)) ** 0.5
-
-def median(values):
-    """ 
-    A median is also known as the 50th percentile. Exactly 50% of people make less than the median and 50% make more.
-    """
-    return sorted(values)[len(values) / 2]
-
-def percentile(values, percentile=75):
-    idx = math.trunc(((100 - percentile) / 100) * len(values))
-    if idx > 0:
-        values = sorted(values)[idx:]
-    return sum(values) / len(values)
-
-def aggregate(values, cnt=None):
-    if cnt is None:
-        cnt = len(values)
-
-    if cnt == 0:
-        return { 'max': 0, 'p75': 0, 'p85': 0, 'avg': 0, 'med': 0, 'dev': 0 }
-    if cnt == 1:
-        val = int(values[0] * 1000000)
-        return { 'max': val, 'p75': val, 'p85': val, 'avg': val, 'med': val, 'dev': val }
-
-    return {
-        'max': int(max(values) * 1000000),
-        'p75': int(percentile(values, 75) * 1000000),
-        'p85': int(percentile(values, 85) * 1000000),
-        'avg': int(avg(values, cnt) * 1000000),
-        'med': int(median(values) * 1000000),
-        'dev': int(stddev(values, cnt) * 1000000),
-    }
-
 class Decoder(multiprocessing.Process):
     def __init__(self, pid):
         multiprocessing.Process.__init__(self)
         self.parent = pid
+
+    def avg(self, values, cnt=None):
+        return sum(map(float, values)) / (len(values) if cnt is None else cnt)
+
+    def stddev(self, values, cnt=None):
+        mean = self.avg(values)
+        return (sum((v - mean) ** 2 for v in values) / (len(values) if cnt is None else cnt)) ** 0.5
+
+    def median(self, values):
+        """ 
+        A median is also known as the 50th percentile. Exactly 50% of people make less than the median and 50% make more.
+        """
+        return sorted(values)[len(values) / 2]
+
+    def percentile(self, values, percentile=75):
+        idx = math.trunc(((100 - percentile) / 100) * len(values))
+        if idx > 0:
+            values = sorted(values)[idx:]
+        return sum(values) / len(values)
+
+    def aggregate(self, values, cnt=None):
+        if cnt is None:
+            cnt = len(values)
+
+        if cnt == 0:
+            return { 'max': 0, 'p75': 0, 'p85': 0, 'avg': 0, 'med': 0, 'dev': 0 }
+        if cnt == 1:
+            val = int(values[0] * 1000000)
+            return { 'max': val, 'p75': val, 'p85': val, 'avg': val, 'med': val, 'dev': val }
+
+        return {
+            'max': int(max(values) * 1000000),
+            'p75': int(self.percentile(values, 75) * 1000000),
+            'p85': int(self.percentile(values, 85) * 1000000),
+            'avg': int(self.avg(values, cnt) * 1000000),
+            'med': int(self.median(values) * 1000000),
+            'dev': int(self.stddev(values, cnt) * 1000000),
+        }
 
     def run(self):
         import zmq
         context = zmq.Context()
         socket = context.socket(zmq.REP)
         socket.bind("tcp://127.0.0.1:5042")
-        print multiprocessing.current_process().name, 'ready'
+        logger.info("%s ready" % multiprocessing.current_process().name)
         try:
-            while True:
-                if self.parent is not None and os.getppid() != self.parent:
-                    break
+            while os.getppid() == self.parent:
                 t, raw_requests = socket.recv_pyobj()
                 socket.send_pyobj((t, self.group(self.decode(raw_requests))))
+        except zmq.ZMQError:
+            pass
         except KeyboardInterrupt:
             pass
         except Exception, e:
-            print "Worker get exception: %s, %s" % (type(e), e)
+            logger.info("%s get exception" % multiprocessing.current_process().name)
+            logger.error(traceback.format_exc())
 
+        logger.info("Decoder stops")
         socket.close()
         context.term()
 
@@ -121,10 +132,9 @@ class Decoder(multiprocessing.Process):
             tags = []
             for tag_key, tag in groupby(list(itertools.chain.from_iterable([r[2] for r in request])), key=lambda x: 'tag:%s:tag' % str(x[0])):
                 rps = sum([x[1][0] for x in tag])
-                tags.append((tag[0][0], rps, aggregate([x[1][1] for x in tag], rps)))
-            requests.append((request[0][0], (len(request), sum([r[1][0] for r in request]), aggregate([r[1][1] for r in request])), tags))
+                tags.append((tag[0][0], rps, self.aggregate([x[1][1] for x in tag], rps)))
+            requests.append((request[0][0], (len(request), sum([r[1][0] for r in request]), self.aggregate([r[1][1] for r in request])), tags))
         return requests
-
 
 """
     Pinba Daemon - starts UDP server on port 30002, recives packets from php, every second sends them to decoder, and 
@@ -138,76 +148,109 @@ class PinbaDaemon(object):
         self.pub = None
         self.req = None
 
-    # this handler will be run for each incoming connection in a dedicated greenlet
     def recv(self, msg, address):
+        """
+        this handler will be run for each incoming connection in a dedicated greenlet
+        """
         self.requests.append(msg)
         
-    # every second collect requests from self.requests and send them to processing
     def interval(self):
+        """
+        every second collect requests from self.requests and send them to processing
+        """
+        logger.info("Interval thread starts")
         t = time.time()
         gevent.sleep(int(t + 1) - time.time())
-        while self.is_running:
-            t = time.time()
-            requests = self.requests
-            self.requests = []
-            self.queue.put((int(t), requests), block=False)
-            #print t, len(requests)
-            self.counter = 0
-            gevent.sleep(1 - (time.time() - t))
-
-    def decoder(self):
-        import simplejson as json
         try:
             while self.is_running:
-                self.req.send_pyobj(self.queue.get())
-                t, requests = self.req.recv_pyobj()
-                #print 'decoder thread reply', t, len(requests)
-                self.pub.send(json.dumps( (t, requests) ))
-        except KeyboardInterrupt:            
+                t = time.time()
+                requests = self.requests
+                self.requests = []
+                self.queue.put((int(t), requests), block=False)
+                self.counter = 0
+                gevent.sleep(1 - (time.time() - t))
+        except KeyboardInterrupt:
+            pass
+        except gevent.GreenletExit:
+            logger.info("Interval thread get GreenletExit")
+            pass
+        logger.info("Interval thread stops")
+
+    def decoder(self):
+        try:
+            while self.is_running:
+                msg = None
+                with gevent.Timeout(5, False):
+                    self.req.send_pyobj(self.queue.get())
+                    msg = self.req.recv_pyobj()
+                if msg is not None:
+                    self.pub.send(json.dumps( msg ))
+                else:
+                    logger.info("Decoder thread timeout")
+        except gzmq.ZMQError:
+            pass
+        except KeyboardInterrupt:
             pass
         except Exception, e:
-            print "PinbaDaemon::decoder got an exception"
+            logger.error(traceback.format_exc())
+        logger.info("Decoder thread stops")
 
-    def run(self):
+    def stop(self, signum, frame):
+        self.is_running = False
+
+    def watcher(self):
+        try:
+            while self.is_running:
+                gevent.sleep(1)
+            
+            logger.info("Try to stop server...")
+            self.server.stop()
+        except Exception, e:
+            logger.error(traceback.format_exc())
+        logger.info("Watcher thread stops")
+
+    def run(self, ip="0.0.0.0", port=30002, out_addr="tcp://*:5000"):
         self.is_running = True
-        
-        decoder = Decoder(os.getpid())
-        decoder.start()
-        
-        # wait for it
+        signal.signal(signal.SIGTERM, self.stop)
+
+        self.child = Decoder(os.getpid())
+        self.child.start()
         time.sleep(.5)
 
-        context = gzmq.Context()
-        
+        logger.info("Listen on %s:%s, output goes to: %s" % (ip, port, out_addr))
+        context = gzmq.Context()        
         self.pub = context.socket(gzmq.PUB)
-        self.pub.bind('tcp://*:5000')
+        self.pub.bind(out_addr)
         self.pub.setsockopt(gzmq.HWM, 60)
         self.pub.setsockopt(gzmq.SWAP, 25000000)
-
         self.req = context.socket(gzmq.REQ)
-        self.req.connect('tcp://127.0.01:5042')
+        self.req.connect("tcp://127.0.0.1:5042")
 
         pool = Pool(5000)
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        udp_socket.bind(('0.0.0.0', 30002))
+        udp_socket.bind((ip, int(port)))
         
-        server = DgramServer(udp_socket, self.recv, spawn=pool)
-        print "Starting udp server on port 30002"
+        self.server = DgramServer(udp_socket, self.recv, spawn=pool)
+        logger.info("Starting udp server on port 30002")
         try:    
-            workers = [gevent.spawn(self.interval), gevent.spawn_later(1, self.decoder)]
-            server.serve_forever()
+            gevent.spawn(self.watcher)
+            self.workers = [gevent.spawn(self.interval), gevent.spawn_later(1, self.decoder)]
+            self.server.serve_forever()
         except KeyboardInterrupt:            
             pass
         except Exception, e:
-            print "PinbaDaemon got an exception"
+            logger.error(traceback.format_exc())
         
+        logger.info("Daemon shutting down")
         self.is_running = False
-        gevent.joinall(workers)
-        self.queue.join()
+        gevent.joinall(self.workers)
+        logger.info("All workers stops")
         self.pub.close()
         context.term()
-        decoder.terminate()
+        logger.info("Sockets closed")
+        self.child.terminate()
+        logger.info("Daemon stops")
 
 """
     UDP Server for gevent.
@@ -323,11 +366,72 @@ class DgramServer(BaseServer):
     def is_fatal_error(self, ex):
         return isinstance(ex, socket.error) and ex[0] in (errno.EBADF, errno.EINVAL, errno.ENOTSOCK)
 
-if __name__ == "__main__":
+def main(options):
     daemon = PinbaDaemon()
     try:
-        daemon.run()
+        logger.info("starting daemon..")
+        daemon.run(options.ip or '0.0.0.0', options.port or '30002', options.out or 'tcp://*:5000')
     except KeyboardInterrupt:
-        print "\nGot Ctrl-C, shutting down..."
-    except Exception, e:
-        print "Oops...", e
+        daemon.stop()
+
+def cli_stop(options):
+    print "Stopping daemon..."
+    try:
+        pf = file(options.pid, "r")
+        pid = int(pf.read().strip())
+        pf.close()
+    except IOError:
+        sys.stderr.write("pid_file at " + options.pid + " doesn't exist\n")
+        return
+    try:
+        while 1:
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(0.1)
+    except OSError, err:
+        err = str(err)
+        if "No such process" in err:
+            if os.path.exists(options.pid):
+                os.remove(options.pid)
+            print "OK"
+        else:
+            print str(err)
+            sys.exit(1)
+
+def maxfd():
+    import resource
+    return resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+
+def cli_start():
+    parser = OptionParser()
+    parser.add_option("-d", "--daemon", dest="daemon", help="run as daemon", action="store_true", default=False)
+    parser.add_option("-p", "--port", dest="port", help="which port to listen", type="int", default=30002)
+    parser.add_option("-i", "--ip", dest="ip", help="which ip to listen", type="string", default="0.0.0.0")
+    parser.add_option("-o", "--out", dest="out", help="output address for zmq", type="string", default="tcp://*:5000")
+    parser.add_option("-l", "--log", dest="log", help="log file path", type="string", default="/var/log/pinba.log")
+    parser.add_option("-P", "--pid", dest="pid", help="pid file path", type="string", default="/var/run/pinba.pid")
+    (options, args) = parser.parse_args()
+  
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    fh = logging.FileHandler(options.log)
+    ch = logging.StreamHandler()
+    
+    fh.setFormatter(formatter)
+    ch.setFormatter(formatter)
+
+    logger.setLevel(logging.INFO)
+
+    pid = daemon.pidlockfile.TimeoutPIDLockFile(options.pid, 2)
+    if options.daemon:
+        if len(args) == 0:
+            with daemon.DaemonContext(pidfile=pid, files_preserve=range(maxfd() + 2), stdout=sys.stdout, stderr=sys.stderr, working_directory=os.getcwd()):
+                logger.addHandler(fh)
+                main(options)
+        elif len(args) == 1 and args[0] == 'stop':
+            sys.exit(cli_stop(options))
+    else:
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(ch)
+        main(options)
+    
+if __name__ == "__main__":
+    cli_start()
