@@ -42,7 +42,7 @@ class Decoder(multiprocessing.Process):
         return (sum((v - mean) ** 2 for v in values) / (len(values) if cnt is None else cnt)) ** 0.5
 
     def median(self, values):
-        """ 
+        """
         A median is also known as the 50th percentile. Exactly 50% of people make less than the median and 50% make more.
         """
         return sorted(values)[len(values) / 2]
@@ -112,13 +112,16 @@ class Decoder(multiprocessing.Process):
                     tags = {}
                     to = offset + tag_count
                     for tag_name, tag_value in zip(request.timer_tag_name[offset:to], request.timer_tag_value[offset:to]):
-                        tags[str(request.dictionary[tag_name])] = str(request.dictionary[tag_value])
-                    
+                        tags[request.dictionary[tag_name].encode('ascii', 'ignore')] = request.dictionary[tag_value].encode('ascii', 'ignore')
                     timers.append((tags, (hit_count, timer_value)))
                     offset = to
             requests.append((
-                (str(request.hostname), str(request.server_name), str(request.script_name)), 
-                (request.document_size, request.request_time), 
+                (
+                    request.hostname.encode('ascii', 'ignore'),
+                    request.server_name.encode('ascii', 'ignore'),
+                    request.script_name.encode('ascii', 'ignore')
+                ),
+                (request.document_size, request.request_time),
                 timers
             ))
         return requests
@@ -127,17 +130,20 @@ class Decoder(multiprocessing.Process):
         """
         Group requests for 1 second, calc average time
         """
-        requests = []
+        result = []
         for key, request in groupby(rows, key=lambda r: '#'.join(r[0])):
             tags = []
-            for tag_key, tag in groupby(list(itertools.chain.from_iterable([r[2] for r in request])), key=lambda x: 'tag:%s:tag' % str(x[0])):
-                rps = sum([x[1][0] for x in tag])
+            requests = list(itertools.chain.from_iterable([r[2] for r in request]))
+            request_tags = groupby(requests, key=lambda x: 'tag:%s:tag' % str(x[0]))
+            for tag_key, tag in request_tags:
+                rps = sum([int(x[1][0]) for x in tag])
                 tags.append((tag[0][0], rps, self.aggregate([x[1][1] for x in tag], rps)))
-            requests.append((request[0][0], (len(request), sum([r[1][0] for r in request]), self.aggregate([r[1][1] for r in request])), tags))
-        return requests
+
+            result.append((request[0][0], (len(request), sum([int(r[1][0]) for r in request]), self.aggregate([float(r[1][1]) for r in request])), tags))
+        return result
 
 """
-    Pinba Daemon - starts UDP server on port 30002, recives packets from php, every second sends them to decoder, and 
+    Pinba Daemon - starts UDP server on port 30002, recives packets from php, every second sends them to decoder, and
     then sends them in usable format via zmq socket.
 """
 class PinbaDaemon(object):
@@ -153,7 +159,7 @@ class PinbaDaemon(object):
         this handler will be run for each incoming connection in a dedicated greenlet
         """
         self.requests.append(msg)
-        
+
     def interval(self):
         """
         every second collect requests from self.requests and send them to processing
@@ -202,7 +208,7 @@ class PinbaDaemon(object):
         try:
             while self.is_running:
                 gevent.sleep(1)
-            
+
             logger.info("Try to stop server...")
             self.server.stop()
         except Exception, e:
@@ -218,7 +224,7 @@ class PinbaDaemon(object):
         time.sleep(.5)
 
         logger.info("Listen on %s:%s, output goes to: %s" % (ip, port, out_addr))
-        context = gzmq.Context()        
+        context = gzmq.Context()
         self.pub = context.socket(gzmq.PUB)
         self.pub.bind(out_addr)
         self.pub.setsockopt(gzmq.HWM, 60)
@@ -230,18 +236,18 @@ class PinbaDaemon(object):
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         udp_socket.bind((ip, int(port)))
-        
+
         self.server = DgramServer(udp_socket, self.recv, spawn=pool)
         logger.info("Starting udp server on port 30002")
-        try:    
+        try:
             gevent.spawn(self.watcher)
             self.workers = [gevent.spawn(self.interval), gevent.spawn_later(1, self.decoder)]
             self.server.serve_forever()
-        except KeyboardInterrupt:            
+        except KeyboardInterrupt:
             pass
         except Exception, e:
             logger.error(traceback.format_exc())
-        
+
         logger.info("Daemon shutting down")
         self.is_running = False
         gevent.joinall(self.workers)
@@ -410,11 +416,11 @@ def cli_start():
     parser.add_option("-l", "--log", dest="log", help="log file path", type="string", default="/var/log/pinba.log")
     parser.add_option("-P", "--pid", dest="pid", help="pid file path", type="string", default="/var/run/pinba.pid")
     (options, args) = parser.parse_args()
-  
+
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     fh = logging.FileHandler(options.log)
     ch = logging.StreamHandler()
-    
+
     fh.setFormatter(formatter)
     ch.setFormatter(formatter)
 
@@ -432,6 +438,6 @@ def cli_start():
         logger.setLevel(logging.DEBUG)
         logger.addHandler(ch)
         main(options)
-    
+
 if __name__ == "__main__":
     cli_start()
