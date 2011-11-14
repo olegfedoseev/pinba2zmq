@@ -1,5 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+#
+# Copyright (C) 2011 Oleg Fedoseev <oleg.fedoseev@me.com>
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 from __future__ import with_statement
 
@@ -102,28 +116,27 @@ class Decoder(multiprocessing.Process):
         """
         requests = []
         for r in rows:
-            request = Request()
-            request.ParseFromString(r)
+            try:
+                request = Request()
+                request.ParseFromString(r)
 
-            timers = []
-            if len(request.timer_hit_count) > 0:
-                offset = 0
-                for tag_count, hit_count, timer_value in zip(request.timer_tag_count, request.timer_hit_count, request.timer_value):
-                    tags = {}
-                    to = offset + tag_count
-                    for tag_name, tag_value in zip(request.timer_tag_name[offset:to], request.timer_tag_value[offset:to]):
-                        tags[request.dictionary[tag_name].encode('ascii', 'ignore')] = request.dictionary[tag_value].encode('ascii', 'ignore')
-                    timers.append((tags, (hit_count, timer_value)))
-                    offset = to
-            requests.append((
-                (
-                    request.hostname.encode('ascii', 'ignore'),
-                    request.server_name.encode('ascii', 'ignore'),
-                    request.script_name.encode('ascii', 'ignore')
-                ),
-                (request.document_size, request.request_time),
-                timers
-            ))
+                timers = []
+                if len(request.timer_hit_count) > 0:
+                    offset = 0
+                    for tag_count, hit_count, timer_value in zip(request.timer_tag_count, request.timer_hit_count, request.timer_value):
+                        tags = {}
+                        to = offset + tag_count
+                        for tag_name, tag_value in zip(request.timer_tag_name[offset:to], request.timer_tag_value[offset:to]):
+                            tags[request.dictionary[tag_name]] = request.dictionary[tag_value]
+                        timers.append((tags, (hit_count, timer_value)))
+                        offset = to
+                requests.append((
+                    (request.hostname, request.server_name, request.script_name),
+                    (request.document_size, request.request_time),
+                    timers
+                ))
+            except Exception, e:
+                logger.error(traceback.format_exc())
         return requests
 
     def group(self, rows):
