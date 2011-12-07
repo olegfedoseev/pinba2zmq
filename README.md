@@ -57,7 +57,7 @@ Format of results:
 ]
 ```
 
-Time in folowing format / Время идёт в формате:
+Time is in folowing format:
 
 ``` js
 {

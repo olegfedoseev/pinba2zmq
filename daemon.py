@@ -17,33 +17,51 @@
 
 from __future__ import with_statement
 
-import os, sys, time, multiprocessing, itertools, math, errno, traceback, signal, resource
+import os
+import sys
+import time
+import multiprocessing
+import itertools
+import math
+import errno
+import traceback
+import signal
+import resource
+import logging
+import logging.handlers
+
 from optparse import OptionParser
-import sys, logging, logging.handlers, traceback
+from daemon import DaemonContext
+from daemon.pidlockfile import TimeoutPIDLockFile
 
 import gevent
-from gevent.monkey import patch_all; patch_all()
+from gevent.monkey import patch_all
 from gevent.queue import JoinableQueue
 from gevent.pool import Pool
 from gevent.baseserver import BaseServer
 from gevent import socket, core
 
 import simplejson as json
-from gevent_zeromq import zmq as gzmq
-import daemon
-import daemon.pidlockfile
+from gevent_zeromq import zmq
 
+# protobuf message
 from Pinba import Request
 
 logger = logging.getLogger("pinba")
+patch_all()
+
 
 class groupby(dict):
-    def __init__(self, seq, key=lambda x:x):
+    def __init__(self, seq, key=lambda x: x):
         for value in seq:
             self.setdefault(key(value), []).append(value)
     __iter__ = dict.iteritems
 
+
 class Decoder(multiprocessing.Process):
+    """
+    Process that receives ProtoBuf encoded messages from Pinba, decodes it and group it by host+server+script[+tags]
+    """
     def __init__(self, pid):
         multiprocessing.Process.__init__(self)
         self.parent = pid
@@ -72,10 +90,10 @@ class Decoder(multiprocessing.Process):
             cnt = len(values)
 
         if cnt == 0:
-            return { 'max': 0, 'p75': 0, 'p85': 0, 'avg': 0, 'med': 0, 'dev': 0 }
+            return {'max': 0, 'p75': 0, 'p85': 0, 'avg': 0, 'med': 0, 'dev': 0}
         if cnt == 1:
             val = int(values[0] * 1000000)
-            return { 'max': val, 'p75': val, 'p85': val, 'avg': val, 'med': val, 'dev': val }
+            return {'max': val, 'p75': val, 'p85': val, 'avg': val, 'med': val, 'dev': val}
 
         return {
             'max': int(max(values) * 1000000),
@@ -87,23 +105,22 @@ class Decoder(multiprocessing.Process):
         }
 
     def run(self):
-        import zmq
         context = zmq.Context()
-        socket = context.socket(zmq.REP)
-        socket.bind("tcp://127.0.0.1:5042")
+        rep_socket = context.socket(zmq.REP)
+        rep_socket.bind("ipc:///tmp/pinba2zmq.sock")
         logger.info("%s ready" % multiprocessing.current_process().name)
         try:
             while os.getppid() == self.parent:
-                t, raw_requests = socket.recv_pyobj()
-                socket.send_pyobj((t, self.group(self.decode(raw_requests))))
+                t, raw_requests = rep_socket.recv_pyobj()
+                rep_socket.send_pyobj((t, self.group(self.decode(raw_requests))))
         except (zmq.ZMQError, KeyboardInterrupt):
             pass
-        except Exception, e:
+        except Exception:
             logger.info("%s get exception" % multiprocessing.current_process().name)
             logger.error(traceback.format_exc())
 
         logger.info("Decoder stops")
-        socket.close()
+        rep_socket.close()
         context.term()
 
     def decode(self, rows):
@@ -135,9 +152,6 @@ class Decoder(multiprocessing.Process):
                 ))
             except UnicodeDecodeError:
                 logger.info("Got UnicodeDecodeError Exception!")
-            except Exception:
-                logger.info("UnicodeDecodeError pass but there are Exception!")
-                
         return requests
 
     def group(self, rows):
@@ -152,15 +166,18 @@ class Decoder(multiprocessing.Process):
             for tag_key, tag in request_tags:
                 rps = sum([int(x[1][0]) for x in tag])
                 tags.append((tag[0][0], rps, self.aggregate([x[1][1] for x in tag], rps)))
-
-            result.append((request[0][0], (len(request), sum([int(r[1][0]) for r in request]), self.aggregate([float(r[1][1]) for r in request])), tags))
+            try:
+                result.append((request[0][0], (len(request), sum([int(r[1][0]) for r in request]), self.aggregate([float(r[1][1]) for r in request])), tags))
+            except:
+                pass
         return result
 
-"""
-    Pinba Daemon - starts UDP server on port 30002, recives packets from php, every second sends them to decoder, and
-    then sends them in usable format via zmq socket.
-"""
+
 class PinbaDaemon(object):
+    """
+        Pinba Daemon - starts UDP server on port 30002, recives packets from php, every second sends them to decoder, and
+        then sends them in usable format via zmq socket.
+    """
     def __init__(self, ip="0.0.0.0", port=30002, out_addr="tcp://*:5000"):
         self.requests = []
         self.queue = JoinableQueue()
@@ -207,9 +224,9 @@ class PinbaDaemon(object):
                     self.pub.send(json.dumps(msg))
                 else:
                     logger.info("Decoder thread timeout")
-        except (gzmq.ZMQError, KeyboardInterrupt):
+        except (zmq.ZMQError, KeyboardInterrupt):
             pass
-        except Exception, e:
+        except Exception:
             logger.error(traceback.format_exc())
         logger.info("Decoder thread stops")
 
@@ -222,7 +239,7 @@ class PinbaDaemon(object):
                 gevent.sleep(1)
             logger.info("Try to stop server...")
             self.server.stop()
-        except Exception, e:
+        except Exception:
             logger.error(traceback.format_exc())
         logger.info("Watcher thread stops")
 
@@ -235,13 +252,14 @@ class PinbaDaemon(object):
         time.sleep(.5)
 
         logger.info("Listen on %s:%s, output goes to: %s" % (self.ip, self.port, self.out))
-        context = gzmq.Context()
-        self.pub = context.socket(gzmq.PUB)
+        context = zmq.Context()
+        self.pub = context.socket(zmq.PUB)
         self.pub.bind(self.out)
-        self.pub.setsockopt(gzmq.HWM, 60)
-        self.pub.setsockopt(gzmq.SWAP, 25000000)
-        self.req = context.socket(gzmq.REQ)
-        self.req.connect("tcp://127.0.0.1:5042")
+        self.pub.setsockopt(zmq.HWM, 60)
+        self.pub.setsockopt(zmq.SWAP, 2500000)
+
+        self.req = context.socket(zmq.REQ)
+        self.req.connect("ipc:///tmp/pinba2zmq.sock")
 
         pool = Pool(5000)
         self.server = DgramServer(self.ip, self.port, self.recv, spawn=pool)
@@ -252,7 +270,7 @@ class PinbaDaemon(object):
             self.server.serve_forever()
         except KeyboardInterrupt:
             pass
-        except Exception, e:
+        except Exception:
             logger.error(traceback.format_exc())
 
         logger.info("Daemon shutting down")
@@ -262,15 +280,15 @@ class PinbaDaemon(object):
         self.child.terminate()
         logger.info("Daemon stops")
 
-"""
+
+class DgramServer(BaseServer):
+    """
     UDP Server for gevent.
     Based on http://code.google.com/p/gevent/issues/detail?id=50
-"""
 
-# Copyright (c) 2009-2010 Denis Bilenko. See LICENSE for details.
-"""UDP/SSL server"""
-class DgramServer(BaseServer):
-    """A generic UDP server. Receive UDP package on a listening socket and spawns user-provided *handle*
+    Copyright (c) 2009-2010 Denis Bilenko. See LICENSE for details.
+
+    A generic UDP server. Receive UDP package on a listening socket and spawns user-provided *handle*
     for each connection with 2 arguments: the client message and the client address.
 
     Note that although the errors in a successfully spawned handler will not affect the server or other connections,
@@ -345,7 +363,7 @@ class DgramServer(BaseServer):
             try:
                 msg, address = self.socket.recvfrom(1024)
             except socket.error, err:
-                if err[0]==errno.EAGAIN:
+                if err[0] == errno.EAGAIN:
                     sys.exc_clear()
                     return
                 raise
@@ -374,11 +392,12 @@ class DgramServer(BaseServer):
         if self.delay >= 0:
             self.stop_accepting()
             self._start_receving_timer = core.timer(self.delay, self.start_accepting)
-            self.delay = min(self.max_delay, self.delay*2)
+            self.delay = min(self.max_delay, self.delay * 2)
         sys.exc_clear()
 
     def is_fatal_error(self, ex):
         return isinstance(ex, socket.error) and ex[0] in (errno.EBADF, errno.EINVAL, errno.ENOTSOCK)
+
 
 def run(options):
     daemon = PinbaDaemon(options.ip or '0.0.0.0', options.port or '30002', options.out or 'tcp://*:5000')
@@ -387,6 +406,7 @@ def run(options):
         daemon.run()
     except KeyboardInterrupt:
         daemon.stop()
+
 
 def stop(options):
     print "Stopping daemon..."
@@ -428,14 +448,13 @@ if __name__ == "__main__":
     fh.setFormatter(formatter)
     ch.setFormatter(formatter)
 
-    #logger.setLevel(logging.INFO)
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
-    pid = daemon.pidlockfile.TimeoutPIDLockFile(options.pid, 2)
+    pid = TimeoutPIDLockFile(options.pid, 2)
     if options.daemon:
         if len(args) == 0:
             files = range(resource.getrlimit(resource.RLIMIT_NOFILE)[1] + 2)
-            with daemon.DaemonContext(pidfile=pid, files_preserve=files, stdout=sys.stdout, stderr=sys.stderr, working_directory=os.getcwd()):
+            with DaemonContext(pidfile=pid, files_preserve=files, stdout=sys.stdout, stderr=sys.stderr, working_directory=os.getcwd()):
                 logger.addHandler(fh)
                 run(options)
         elif len(args) == 1 and args[0] == 'stop':
