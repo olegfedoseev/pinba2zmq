@@ -1,7 +1,0 @@
-include MANIFEST.in
-include setup.py
-include test.py
-
-include pinba.cc
-include pinba.pb.cc
-include pinba.pb.h
