@@ -7,7 +7,7 @@ Python daemon for collection and basic aggregation of Pinba (http://pinba.org) d
 About
 -----
 Production ready. It used 24/7 with load around 5000rps on small VPS.
-We use data from it to build real-time graphs. (Hope to open-source it to in near future)
+We use data from it too build real-time graphs. (Hope to open-source it to in near future)
 
 How to use
 -----
@@ -23,11 +23,13 @@ python setup.py install
 ```
 
 Now, if you want pinba2zmq to start with your server (if you on Ubuntu):
+
 ``` shell
 sudo chmod +x /etc/init.d/pinba2zmq && sudo update-rc.d pinba2zmq defaults
-````
+```
 
 And to start:
+
 ``` shell
 sudo service pinba2zmq start
 ```
@@ -36,6 +38,7 @@ Command line arguments
 -----
 
 When you start pinba2zmq, you can use following arguments:
+
 ``` shell
 pinba2zmq [-l|--log /path/to/file.log] [-v|--verbose] [-p|--pinba 0.0.0.0:30002] [-o|--out tcp://*:5000]
 ```
