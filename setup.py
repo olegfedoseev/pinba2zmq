@@ -37,7 +37,7 @@ setup(
     author="Oleg Fedoseev",
     author_email="oleg.fedoseev@me.com",
     packages=['pinba2zmq'],
-    install_requires=['gevent', 'python-daemon', 'simplejson', 'gevent_zeromq'],
+    install_requires=['gevent', 'simplejson', 'gevent_zeromq'],
     include_package_data=True,
     zip_safe=False,
     ext_modules=[
