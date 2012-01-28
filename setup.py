@@ -19,7 +19,7 @@ from setuptools import setup, Extension
 
 setup(
     name='pinba2zmq',
-    version='0.4b',
+    version='0.6b',
     license='http://www.apache.org/licenses/LICENSE-2.0',
     url='https://github.com/aryoh/pinba2zmq',
     description="Daemon for collecting Pinba's (http://pinba.org) data.",
@@ -37,7 +37,7 @@ setup(
     author="Oleg Fedoseev",
     author_email="oleg.fedoseev@me.com",
     packages=['pinba2zmq'],
-    install_requires=['gevent', 'simplejson', 'gevent_zeromq'],
+    install_requires=['gevent', 'ujson', 'gevent_zeromq'],
     include_package_data=True,
     zip_safe=False,
     ext_modules=[

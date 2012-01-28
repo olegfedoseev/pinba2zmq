@@ -31,10 +31,9 @@ from optparse import OptionParser
 import gevent
 from gevent import Timeout
 from gevent.monkey import patch_all
-from gevent.queue import JoinableQueue
 from gevent.pool import Pool
 
-import simplejson as json
+import ujson
 from gevent_zeromq import zmq
 
 # protobuf message
@@ -56,28 +55,25 @@ class Decoder(multiprocessing.Process):
     """
     Process that receives ProtoBuf encoded messages from Pinba, decodes it and group it by host+server+script[+tags]
     """
-    def __init__(self, pid):
+    def __init__(self, pid, out_addr):
         multiprocessing.Process.__init__(self)
         self.parent = pid
+        self.out_addr = out_addr
 
     def avg(self, values, cnt=None):
-        return sum(map(float, values)) / (len(values) if cnt is None else cnt)
+        return float(sum(map(float, values)) / (len(values) if cnt is None else cnt))
 
     def stddev(self, values, cnt=None):
-        mean = self.avg(values)
-        return (sum((v - mean) ** 2 for v in values) / (len(values) if cnt is None else cnt)) ** 0.5
+        return float((sum((v - self.avg(values)) ** 2 for v in values) / (len(values) if cnt is None else cnt)) ** 0.5)
 
     def median(self, values):
-        """
-        A median is also known as the 50th percentile. Exactly 50% of people make less than the median and 50% make more.
-        """
-        return sorted(values)[len(values) / 2]
+        return float(sorted(values)[len(values) / 2])
 
     def percentile(self, values, percentile=75):
         idx = math.trunc(((100 - percentile) / 100) * len(values))
         if idx > 0:
             values = sorted(values)[idx:]
-        return sum(values) / len(values)
+        return float(sum(values) / len(values))
 
     def aggregate(self, values, cnt=None):
         if cnt is None:
@@ -86,28 +82,35 @@ class Decoder(multiprocessing.Process):
         if cnt == 0:
             return {'max': 0, 'p85': 0, 'avg': 0, 'med': 0, 'dev': 0}
         if cnt == 1:
-            val = int(values[0] * 1000000)
+            val = values[0]
             return {'max': val, 'p85': val, 'avg': val, 'med': val, 'dev': val}
 
         return {
-            'max': int(max(values) * 1000000),
-            'p85': int(self.percentile(values, 85) * 1000000),
-            'avg': int(self.avg(values, cnt) * 1000000),
-            'med': int(self.median(values) * 1000000),
-            'dev': int(self.stddev(values, cnt) * 1000000),
+            'max': max(values),
+            'p85': self.percentile(values, 85),
+            'avg': self.avg(values, cnt),
+            'med': self.median(values),
+            'dev': self.stddev(values, cnt),
         }
 
     def run(self):
         context = zmq.Context()
-        rep_socket = context.socket(zmq.REP)
-        rep_socket.bind("ipc:///tmp/pinba2zmq.sock")
+
+        incoming = context.socket(zmq.PULL)
+        incoming.bind("ipc:///tmp/pinba2zmq.sock")
+
+        pub = context.socket(zmq.PUB)
+        pub.bind(self.out_addr)
+        pub.setsockopt(zmq.HWM, 1)
+        pub.setsockopt(zmq.SWAP, 512 * 1024 * 1024)
+
         logger.info("%s ready" % multiprocessing.current_process().name)
         try:
             while os.getppid() == self.parent:
                 t = None
                 with Timeout(5, False):
-                    t, raw_requests = rep_socket.recv_pyobj()
-                    rep_socket.send_pyobj((t, self.group(self.decode(raw_requests))))
+                    t, raw_requests = incoming.recv_pyobj()
+                    pub.send(ujson.encode((t, self.group(self.decode(raw_requests)))))
                 if not t:
                     logger.info("Timeout!")
         except (zmq.ZMQError, KeyboardInterrupt):
@@ -117,7 +120,8 @@ class Decoder(multiprocessing.Process):
             logger.error(traceback.format_exc())
 
         logger.info("Decoder process stops")
-        rep_socket.close()
+        incoming.close()
+        pub.close()
         context.term()
 
     def decode(self, rows):
@@ -187,7 +191,6 @@ class PinbaToZmq(object):
     """
     def __init__(self):
         self.requests = []
-        self.queue = JoinableQueue()
         self.is_running = False
         self.pub = None
         self.req = None
@@ -198,22 +201,10 @@ class PinbaToZmq(object):
 
     def interval(self):
         # every second collect requests from self.requests and send them to processing
-        t = time.time()
-        self.queue.put((int(t), self.requests), block=False)
-        self.requests = []
         if self.is_running:
-            gevent.spawn_later(1 - (time.time() - t), self.interval)
-
-    def decoder(self):
-        try:
-            while self.is_running:
-                self.req.send_pyobj(self.queue.get())
-                self.pub.send(json.dumps(self.req.recv_pyobj()))
-        except (zmq.ZMQError, KeyboardInterrupt):
-            pass
-        except Exception:
-            logger.error(traceback.format_exc())
-        logger.info("Decoder thread stops")
+            gevent.spawn_later(1, self.interval)
+        self.push.send_pyobj((int(time.time()), self.requests))
+        self.requests = []
 
     def stop(self, signum=None, frame=None):
         self.is_running = False
@@ -233,26 +224,21 @@ class PinbaToZmq(object):
         signal.signal(signal.SIGTERM, self.stop)
         ip, port = in_addr.split(':')
 
-        self.child = Decoder(os.getpid())
+        self.child = Decoder(os.getpid(), out_addr)
         self.child.start()
         time.sleep(.5)
 
         logger.info("Listen on %s:%s, output goes to: %s" % (ip, port, out_addr))
         context = zmq.Context()
-        self.pub = context.socket(zmq.PUB)
-        self.pub.bind(out_addr)
-        self.pub.setsockopt(zmq.HWM, 1)
-        self.pub.setsockopt(zmq.SWAP, 512 * 1024 * 1024)
-
-        self.req = context.socket(zmq.REQ)
-        self.req.connect("ipc:///tmp/pinba2zmq.sock")
+        self.push = context.socket(zmq.PUSH)
+        self.push.connect("ipc:///tmp/pinba2zmq.sock")
 
         pool = Pool(5000)
         self.server = DgramServer(ip, int(port), self.recv, spawn=pool)
         logger.info("Ready!")
         try:
             gevent.spawn(self.watcher)
-            self.workers = [gevent.spawn_later(1, self.interval), gevent.spawn_later(1, self.decoder)]
+            self.workers = [gevent.spawn_later(1, self.interval)]
             self.server.serve_forever()
         except KeyboardInterrupt:
             pass
@@ -261,7 +247,7 @@ class PinbaToZmq(object):
 
         logger.info("Daemon shutting down")
         self.is_running = False
-        gevent.joinall(self.workers)
+        gevent.killall(self.workers)
         self.pub.close()
         self.child.terminate()
         logger.info("Daemon stops")
