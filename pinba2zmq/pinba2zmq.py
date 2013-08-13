@@ -42,9 +42,10 @@ class PinbaToZmq(object):
         then sends them in usable format via zmq socket.
     """
     def __init__(self):
+        self.workers = []
         self.requests = []
-        self.is_running = False
         self.req = None
+        self.pub = None
 
     def recv(self, msg, address):
         # this handler will be run for each incoming connection in a dedicated greenlet
@@ -52,31 +53,30 @@ class PinbaToZmq(object):
 
     def interval(self):
         # every second collect requests from self.requests and send them to processing
-        if self.is_running:
-            gevent.spawn_later(1, self.interval)
+        gevent.spawn_later(1, self.interval)
         requests = self.requests
         ts = int(time.time())
-        self.push.send_pyobj((ts, requests))
         self.requests = []
 
         data = zlib.compress('\n--\n'.join(requests))
-        logger.info("[%d] Send %d bytes and %d requests" % (ts, len(data), len(requests)))
         self.pub.send("%s\n%s" % (ts, data))
+        logger.info("[%d] Send %d bytes and %d requests" % (ts, len(data), len(requests)))
 
     def run(self, in_addr="0.0.0.0:30002", out_addr="tcp://*:5000"):
-        self.is_running = True
         ip, port = in_addr.split(':')
 
         logger.info("Listen on %s:%s, output goes to: %s" % (ip, port, out_addr))
         context = zmq.Context()
-        self.push = context.socket(zmq.PUSH)
-        self.push.connect("ipc:///tmp/pinba2zmq.sock")
+
+        self.pub = context.socket(zmq.PUB)
+        self.pub.bind(out_addr)
+        self.pub.setsockopt(zmq.HWM, 1)
+        self.pub.setsockopt(zmq.SWAP, 512 * 1024 * 1024)
 
         pool = Pool(5000)
         self.server = DgramServer(ip, int(port), self.recv, spawn=pool)
         logger.info("Ready!")
         try:
-            gevent.spawn(self.watcher)
             self.workers = [gevent.spawn_later(1, self.interval)]
             self.server.serve_forever()
         except KeyboardInterrupt:
@@ -85,7 +85,8 @@ class PinbaToZmq(object):
             logger.error(traceback.format_exc())
 
         logger.info("Daemon shutting down")
-        self.is_running = False
+        if self.pub:
+            self.pub.close()
         gevent.killall(self.workers)
         self.child.terminate()
         logger.info("Daemon stops")

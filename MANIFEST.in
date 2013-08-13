@@ -1,9 +1,2 @@
 include MANIFEST.in
 include setup.py
-include test.py
-
-include pinba_pb/pinba.cc
-include pinba_pb/pinba.pb.cc
-include pinba_pb/pinba.pb.h
-
-include init.d/pinba2zmq
