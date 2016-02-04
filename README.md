@@ -1,3 +1,7 @@
+# DEPRECATED
+
+Use https://github.com/olegfedoseev/pinba-server instead
+
 Pinba to ZeroMQ
 =================
 
